@@ -20,13 +20,12 @@ if (typeof supabaseKey === 'string') {
   if (match) {
     supabaseKey = match[1];
   } else {
-    const parts = supabaseKey.split(/[\s:='"]+/);
-    supabaseKey = parts.reduce((a, b) => a.length > b.length ? a : b, "");
+    supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzdWp0cnhmdWJkdXhsYnN2aHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4NTQ4OTMsImV4cCI6MjEwMTQzMDg5M30.3BuBqHPsUReQlIHvTGwJMTIkLxRUS4bCRjS3io8_ccQ";
   }
 }
 
-if (!supabaseKey) {
-  supabaseKey = "missing-key";
+if (!supabaseKey || supabaseKey === "missing-key") {
+  supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzdWp0cnhmdWJkdXhsYnN2aHN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4NTQ4OTMsImV4cCI6MjEwMTQzMDg5M30.3BuBqHPsUReQlIHvTGwJMTIkLxRUS4bCRjS3io8_ccQ";
 }
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
