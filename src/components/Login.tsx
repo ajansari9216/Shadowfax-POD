@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { supabase } from "../lib/supabase";
 import { Mail, Lock, Loader2, PackageSearch } from "lucide-react";
 import { motion } from "motion/react";

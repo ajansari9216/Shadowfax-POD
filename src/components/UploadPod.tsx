@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import React, { useState, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import {
   UploadCloud,
@@ -8,9 +8,9 @@ import {
   CheckCircle2,
   X,
 } from "lucide-react";
-import imageCompression from "browser-image-compression";
 import { performOCR } from "../lib/ocr";
 import { motion, AnimatePresence } from "motion/react";
+import DocumentScanner from "./DocumentScanner";
 
 export default function UploadPod({
   onUploadComplete,
@@ -18,6 +18,8 @@ export default function UploadPod({
   onUploadComplete: () => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
+  const [showScanner, setShowScanner] = useState(false);
+  const [processedFile, setProcessedFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("");
   const [progress, setProgress] = useState(0);
@@ -31,6 +33,7 @@ export default function UploadPod({
       const selectedFile = e.target.files[0];
       setFile(selectedFile);
       setPreview(URL.createObjectURL(selectedFile));
+      setShowScanner(true);
       setExtractedNumbers([]);
       setStatus("");
     }
@@ -39,64 +42,83 @@ export default function UploadPod({
   const clearSelection = () => {
     setFile(null);
     setPreview(null);
+    setProcessedFile(null);
+    setShowScanner(false);
     setExtractedNumbers([]);
     setStatus("");
   };
 
+  const handleScannerConfirm = async (processedSrc: string, original: File) => {
+    setShowScanner(false);
+    try {
+      const res = await fetch(processedSrc);
+      const blob = await res.blob();
+      const newFile = new File([blob], "scanned_pod.png", { type: "image/png" });
+      setProcessedFile(newFile); 
+    } catch (e) {
+      console.error(e);
+      setProcessedFile(original);
+    }
+    // Maintain original for preview and storage
+    setPreview(URL.createObjectURL(original));
+    setFile(original);
+  };
+
+  const handleScannerCancel = () => {
+    clearSelection();
+  };
+
   const processAndUpload = async () => {
     if (!file) return;
-
     setLoading(true);
+
     try {
-      // 1. Compress Image
-      setStatus("Compressing image...");
-      setProgress(10);
-      const compressedFile = await imageCompression(file, {
-        maxSizeMB: 1,
-        maxWidthOrHeight: 1920,
-        useWebWorker: true,
-      });
-
-      // 2. OCR Extraction
-      setStatus("Extracting text (OCR)...");
-      setProgress(30);
-      const { text, numbers } = await performOCR(compressedFile, (p) => {
-        setProgress(30 + p * 40);
-      });
-      setExtractedNumbers(numbers);
-
-      if (numbers.length === 0) {
-        if (
-          !confirm("No tracking numbers (SF/RT/R) detected. Upload anyway?")
-        ) {
-          setLoading(false);
-          setStatus("");
-          return;
-        }
+      // Check authentication early before uploading
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError || !user) {
+        throw new Error("You must be logged in to upload PODs.");
       }
 
-      // 3. Upload to Supabase Storage
-      setStatus("Uploading to storage...");
-      setProgress(80);
-      const fileExt = compressedFile.name.split(".").pop();
-      const user = (await supabase.auth.getUser()).data.user;
-      if (!user) throw new Error("Not authenticated");
+      // 1. Process for OCR
+      setStatus("Extracting text (OCR)...");
+      setProgress(20);
 
+      // We run OCR on the cropped/processed file if it exists, otherwise the original
+      const ocrTarget = processedFile || file;
+      const { text, numbers } = await performOCR(ocrTarget, (p) => {
+        setProgress(20 + p * 40);
+      });
+
+      setExtractedNumbers(numbers);
+
+      // We no longer block on confirm() because it fails in blocked iframes
+      if (numbers.length === 0) {
+        console.warn("Could not confidently detect tracking number. Proceeding anyway.");
+      }
+
+      // 2. Upload ORIGINAL image to Supabase Storage
+      setStatus("Uploading original photo...");
+      setProgress(70);
+
+      const fileExt = file.name ? file.name.split(".").pop() : "jpg";
       const filePath = `${user.id}/${Math.random().toString(36).substring(2)}_${Date.now()}.${fileExt}`;
 
       const { error: uploadError } = await supabase.storage
         .from("pod-images")
-        .upload(filePath, compressedFile);
+        .upload(filePath, file);
 
-      if (uploadError) throw uploadError;
+      if (uploadError) {
+        console.error("Storage upload error:", uploadError);
+        throw new Error(`Storage error: ${uploadError.message}`);
+      }
 
       const { data: publicUrlData } = supabase.storage
         .from("pod-images")
         .getPublicUrl(filePath);
 
-      // 4. Save to Database
-      setStatus("Saving record...");
-      setProgress(95);
+      // 3. Save to Database
+      setStatus("Saving record to database...");
+      setProgress(90);
 
       const { error: dbError } = await supabase.from("pod_images").insert({
         user_id: user.id,
@@ -105,7 +127,10 @@ export default function UploadPod({
         tracking_numbers: numbers,
       });
 
-      if (dbError) throw dbError;
+      if (dbError) {
+        console.error("Database insert error:", dbError);
+        throw new Error(`Database error: ${dbError.message}`);
+      }
 
       setStatus("Upload complete!");
       setProgress(100);
@@ -114,11 +139,11 @@ export default function UploadPod({
         onUploadComplete();
       }, 1500);
     } catch (err: any) {
-      console.error(err);
+      console.error("Upload process failed:", err);
       if (err.message && err.message.includes("Bucket not found")) {
         alert("Upload failed: Storage bucket 'pod-images' not found. Please create a public storage bucket named 'pod-images' in your Supabase dashboard.");
       } else {
-        alert("Upload failed: " + err.message);
+        alert("Upload failed: " + (err.message || "Unknown error occurred"));
       }
       setStatus("Failed");
     } finally {
@@ -130,6 +155,14 @@ export default function UploadPod({
 
   return (
     <div className="p-4 pt-8 h-full flex flex-col">
+      {showScanner && file ? (
+        <DocumentScanner
+          imageFile={file}
+          onCancel={handleScannerCancel}
+          onConfirm={handleScannerConfirm}
+        />
+      ) : null}
+      
       <div className="mb-6">
         <h2 className="text-2xl font-bold mb-1 tracking-tight">Upload POD</h2>
         <p className="text-sm text-white/50">

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { supabase } from "../lib/supabase";
 import { Search, Loader2, Package } from "lucide-react";
 import { PodImage } from "../types";
