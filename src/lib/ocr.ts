@@ -63,153 +63,161 @@ const preprocessImage = async (file: File, variant: PreprocessVariant): Promise<
   });
 };
 
-export interface ExtractedNumber {
+export interface ExtractedAWB {
   value: string;
-  type: string;
   confidence: number;
 }
 
-export const extractTrackingNumbersWithConfidence = (text: string): ExtractedNumber[] => {
-  const sfRegex = /(?:SF|S F|5F|S5)[ \t\-]*([A-Z0-9 \t\-]{7,20})/gi;
-  const rtRegex = /(?:RT|R T)[ \t\-]*([A-Z0-9 \t\-]{6,15})/gi;
-  const rRegex = /R[ \t\-]*([A-Z0-9 \t\-]{8,20})/gi;
-
-  const forbiddenWords = [
-    "RETURN", "RECEIVED", "SHADOW", "MUMBAI", "DELHI", "DELIVERY", "RVP", "RTO", "ADDRESS",
-    "MANIFEST", "DATE", "CARRIER", "TABLE", "SR", "NO", "AWB", "SHIPMENT"
-  ];
-  
-  const processMatch = (prefix: string, matchStr: string): { clean: string, conf: number } | null => {
-    let clean = matchStr.replace(/[ \t\-]/g, "").toUpperCase();
-    for (let f of forbiddenWords) {
-      if (clean.includes(f)) {
-        clean = clean.split(f)[0];
-      }
-    }
-    const wordMatch = clean.match(/[A-Z]{3,}/);
-    if (wordMatch) {
-        clean = clean.substring(0, wordMatch.index);
-    }
-    
-    clean = clean.replace(/O/g, "0").replace(/I/g, "1").replace(/S/g, "5").replace(/Z/g, "2").replace(/B/g, "8");
-
-    let conf = 80;
-    if (!clean.match(/[A-Z]/)) conf += 10;
-    
-    if (prefix === "SF" && clean.length >= 8 && clean.length <= 15) {
-      if ((clean.match(/\d/g) || []).length >= 5) {
-        if (clean.length === 8) conf += 10;
-        return { clean: "SF" + clean, conf };
-      }
-    }
-    if (prefix === "RT" && clean.length >= 7 && clean.length <= 12) {
-      if ((clean.match(/\d/g) || []).length >= 5) {
-        return { clean: "RT" + clean, conf };
-      }
-    }
-    if (prefix === "R" && clean.length >= 9 && clean.length <= 15) {
-      if ((clean.match(/\d/g) || []).length >= 5) {
-        return { clean: "R" + clean, conf };
-      }
-    }
-    return null;
-  };
-
-  const results = new Map<string, ExtractedNumber>();
-  
-  let m;
-  while ((m = sfRegex.exec(text)) !== null) {
-    const res = processMatch("SF", m[1]);
-    if (res && (!results.has(res.clean) || results.get(res.clean)!.confidence < res.conf)) {
-      results.set(res.clean, { value: res.clean, type: "Shipment No", confidence: Math.min(99, res.conf) });
-    }
-  }
-  while ((m = rtRegex.exec(text)) !== null) {
-    const res = processMatch("RT", m[1]);
-    if (res && (!results.has(res.clean) || results.get(res.clean)!.confidence < res.conf)) {
-      results.set(res.clean, { value: res.clean, type: "Return ID", confidence: Math.min(99, res.conf) });
-    }
-  }
-  while ((m = rRegex.exec(text)) !== null) {
-    const res = processMatch("R", m[1]);
-    if (res && (!results.has(res.clean) || results.get(res.clean)!.confidence < res.conf)) {
-      results.set(res.clean, { value: res.clean, type: "AWB Ref No", confidence: Math.min(99, res.conf) });
-    }
-  }
-
+export const extractAWBWithConfidence = (text: string): ExtractedAWB[] => {
   const lines = text.split("\n");
+  const results = new Map<string, ExtractedAWB>();
+  
+  // Clean up text
+  const cleanWord = (w: string) => w.replace(/O/g, "0").replace(/I/g, "1").replace(/S/g, "5").replace(/[^A-Z0-9]/gi, "").toUpperCase();
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].toUpperCase();
-    if (line.includes("AWB")) {
-        const nextWords = (line + " " + (lines[i+1]||"")).split(/\s+/);
-        for (let w of nextWords) {
-            if (w.startsWith("R") && w.length > 8 && (w.match(/\d/g)||[]).length > 5) {
-                const clean = w.replace(/O/g, "0").replace(/I/g, "1").replace(/S/g, "5");
-                results.set(clean, { value: clean, type: "AWB Ref No", confidence: 95 });
+    
+    // Check if the line contains AWB
+    const isAWBLine = line.includes("AWB");
+    
+    // Look for alphanumeric words in this line and the next few lines
+    // AWB numbers are typically 8-20 chars long, containing both letters and numbers, or just numbers (but not typical phone numbers)
+    const scanLines = [line, (lines[i+1]||"").toUpperCase(), (lines[i+2]||"").toUpperCase()];
+    
+    scanLines.forEach((scanLine, lineOffset) => {
+      const words = scanLine.split(/[\s|]+/) || [];
+      for (let w of words) {
+        const clean = cleanWord(w);
+        
+        // Basic validation: length between 8 and 20
+        if (clean.length >= 8 && clean.length <= 20) {
+          // Must contain at least 4 digits
+          const digitCount = (clean.match(/\d/g) || []).length;
+          // Must not be just a date (like 11082026)
+          const isDate = /^\d{8}$/.test(clean) || /^\d{4}202\d$/.test(clean);
+          // Must not be a typical phone number (10 digits starting with 6-9)
+          const isPhone = /^[6-9]\d{9}$/.test(clean);
+          // Ignore typical "Shipment No" prefixes if we strictly want AWB?
+          // Sometimes Shipment No is different. Let's just avoid words like RECEIVED.
+          const isKeyword = ["RECEIVED", "RETURN", "SHADOW", "MANIFEST", "DELIVERY", "RUNSHEET"].some(k => clean.includes(k));
+
+          if (digitCount >= 4 && !isDate && !isPhone && !isKeyword) {
+            let conf = 50; // Base confidence
+            
+            // Boost if it contains both letters and numbers
+            if (/[A-Z]/.test(clean) && /[0-9]/.test(clean)) conf += 20;
+            
+            // Boost if it's on the same line as AWB, or the line immediately after
+            if (isAWBLine) {
+              if (lineOffset === 0) conf += 30; // Same line
+              if (lineOffset === 1) conf += 20; // Next line
             }
+            
+            // Boost if it matches the 'R' prefix format we saw in Shadowfax AWBs
+            if (clean.startsWith("R") && clean.length >= 10) conf += 15;
+
+            // Cap at 99
+            conf = Math.min(99, conf);
+
+            if (conf >= 60) { // Only keep reasonable candidates
+              if (!results.has(clean) || results.get(clean)!.confidence < conf) {
+                results.set(clean, { value: clean, confidence: conf });
+              }
+            }
+          }
         }
-    }
+      }
+    });
   }
-
-  return Array.from(results.values());
-};
-
-// Also export the original function for backwards compatibility if something uses it, 
-// though we can just map it
-export const extractTrackingNumbers = (text: string): string[] => {
-  return extractTrackingNumbersWithConfidence(text).map(x => x.value);
+  
+  return Array.from(results.values()).sort((a, b) => b.confidence - a.confidence);
 };
 
 export const performOCR = async (
   imageFile: File,
   onProgress?: (progress: number) => void,
 ): Promise<{ text: string; numbers: string[] }> => {
-  try {
-    let allNumbers: ExtractedNumber[] = [];
-    let combinedText = "";
-
-    const worker = await Tesseract.createWorker("eng", 1, {
-      logger: (m) => {
-        if (m.status === "recognizing text" && onProgress) {
-          onProgress(m.progress * 0.33); 
-        }
-      },
-    });
-
-    const variants: PreprocessVariant[] = ["enhanced", "high-contrast", "binarized"];
+  return new Promise(async (resolve, reject) => {
+    let timeoutId: NodeJS.Timeout;
+    let isDone = false;
     
-    for (let i = 0; i < variants.length; i++) {
-      const processedImageData = await preprocessImage(imageFile, variants[i]);
-      const ret = await worker.recognize(processedImageData);
-      const text = ret.data.text;
-      combinedText += text + "\n---\n";
-      
-      const nums = extractTrackingNumbersWithConfidence(text);
-      nums.forEach(n => {
-        const existing = allNumbers.find(x => x.value === n.value);
-        if (existing) {
-            existing.confidence = Math.min(99, existing.confidence + 5); 
-        } else {
-            allNumbers.push(n);
-        }
+    // Max timeout of 30 seconds for OCR
+    timeoutId = setTimeout(() => {
+      if (!isDone) {
+        isDone = true;
+        reject(new Error("OCR timeout exceeded"));
+      }
+    }, 30000);
+
+    try {
+      console.log("OCR START");
+      let allAWBs: ExtractedAWB[] = [];
+      let combinedText = "";
+      const worker = await Tesseract.createWorker("eng", 1, {
+        logger: (m) => {
+          if (!isDone && m.status === "recognizing text" && onProgress) {
+            onProgress(m.progress * 0.33); 
+          }
+        },
       });
+
+      const variants: PreprocessVariant[] = ["enhanced", "high-contrast", "binarized"];
       
-      const highConf = allNumbers.filter(n => n.confidence >= 90);
-      if (highConf.length > 0) {
-        break;
+      for (let i = 0; i < Math.min(3, variants.length); i++) {
+        if (isDone) break;
+        
+        const processedImageData = await preprocessImage(imageFile, variants[i]);
+        if (isDone) break;
+        
+        const ret = await worker.recognize(processedImageData);
+        const text = ret.data.text;
+        combinedText += text + "\n---\n";
+        
+        const foundAWBs = extractAWBWithConfidence(text);
+        foundAWBs.forEach(n => {
+          const existing = allAWBs.find(x => x.value === n.value);
+          if (existing) {
+              existing.confidence = Math.min(99, Math.max(existing.confidence, n.confidence + 5)); 
+          } else {
+              allAWBs.push(n);
+          }
+        });
+        
+        allAWBs.sort((a, b) => b.confidence - a.confidence);
+        const bestConf = allAWBs.length > 0 ? allAWBs[0].confidence : 0;
+        
+        if (onProgress) onProgress((i + 1) * 0.33);
+
+        if (bestConf >= 85) {
+          console.log(`AWB DETECTED early with confidence ${bestConf}`);
+          break; // Good enough, stop
+        }
       }
       
-      if (onProgress) onProgress((i + 1) * 0.33);
-    }
+      if (!isDone) {
+        await worker.terminate();
+      }
+      
+      if (isDone) return;
+      isDone = true;
+      clearTimeout(timeoutId);
 
-    await worker.terminate();
-    
-    const finalNumbers = allNumbers.filter(n => n.confidence >= 80).map(n => n.value);
-    const resultNums = finalNumbers.length > 0 ? finalNumbers : allNumbers.map(n => n.value);
-    
-    return { text: combinedText, numbers: Array.from(new Set(resultNums)) };
-  } catch (error) {
-    console.error("OCR Error:", error);
-    throw error;
-  }
+      allAWBs.sort((a, b) => b.confidence - a.confidence);
+      
+      // We only return the best AWB if it meets a reasonable threshold
+      const finalAWBs = allAWBs.filter(a => a.confidence >= 65).map(a => a.value);
+      
+      console.log("OCR COMPLETE", finalAWBs);
+      
+      resolve({ text: combinedText, numbers: finalAWBs.length > 0 ? [finalAWBs[0]] : [] });
+    } catch (error) {
+      if (!isDone) {
+        isDone = true;
+        clearTimeout(timeoutId);
+        console.error("OCR Error:", error);
+        reject(error);
+      }
+    }
+  });
 };

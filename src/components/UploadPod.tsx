@@ -25,6 +25,8 @@ export default function UploadPod({
   const [progress, setProgress] = useState(0);
   const [loading, setLoading] = useState(false);
   const [extractedNumbers, setExtractedNumbers] = useState<string[]>([]);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
@@ -36,6 +38,7 @@ export default function UploadPod({
       setShowScanner(true);
       setExtractedNumbers([]);
       setStatus("");
+      setErrorMessage(null);
     }
   };
 
@@ -46,6 +49,7 @@ export default function UploadPod({
     setShowScanner(false);
     setExtractedNumbers([]);
     setStatus("");
+    setErrorMessage(null);
   };
 
   const handleScannerConfirm = async (processedSrc: string, original: File) => {
@@ -69,8 +73,10 @@ export default function UploadPod({
   };
 
   const processAndUpload = async () => {
-    if (!file) return;
+    if (!file || loading) return;
     setLoading(true);
+    let isSuccess = false;
+    console.log("PROCESS START");
 
     try {
       // Check authentication early before uploading
@@ -80,7 +86,8 @@ export default function UploadPod({
       }
 
       // 1. Process for OCR
-      setStatus("Extracting text (OCR)...");
+      console.log("OCR START");
+      setStatus("Extracting AWB (OCR)...");
       setProgress(20);
 
       // We run OCR on the cropped/processed file if it exists, otherwise the original
@@ -88,15 +95,18 @@ export default function UploadPod({
       const { text, numbers } = await performOCR(ocrTarget, (p) => {
         setProgress(20 + p * 40);
       });
-
+      
+      console.log("OCR COMPLETE");
       setExtractedNumbers(numbers);
 
-      // We no longer block on confirm() because it fails in blocked iframes
       if (numbers.length === 0) {
-        console.warn("Could not confidently detect tracking number. Proceeding anyway.");
+        throw new Error("AWB could not be detected. Please retake the photo.");
       }
+      
+      console.log("AWB DETECTED", numbers);
 
       // 2. Upload ORIGINAL image to Supabase Storage
+      console.log("UPLOAD START");
       setStatus("Uploading original photo...");
       setProgress(70);
 
@@ -111,12 +121,14 @@ export default function UploadPod({
         console.error("Storage upload error:", uploadError);
         throw new Error(`Storage error: ${uploadError.message}`);
       }
+      console.log("UPLOAD COMPLETE");
 
       const { data: publicUrlData } = supabase.storage
         .from("pod-images")
         .getPublicUrl(filePath);
 
       // 3. Save to Database
+      console.log("SAVE START");
       setStatus("Saving record to database...");
       setProgress(90);
 
@@ -131,9 +143,12 @@ export default function UploadPod({
         console.error("Database insert error:", dbError);
         throw new Error(`Database error: ${dbError.message}`);
       }
+      console.log("SAVE COMPLETE");
 
+      isSuccess = true;
       setStatus("Upload complete!");
       setProgress(100);
+      console.log("PROCESS COMPLETE");
 
       setTimeout(() => {
         onUploadComplete();
@@ -141,13 +156,13 @@ export default function UploadPod({
     } catch (err: any) {
       console.error("Upload process failed:", err);
       if (err.message && err.message.includes("Bucket not found")) {
-        alert("Upload failed: Storage bucket 'pod-images' not found. Please create a public storage bucket named 'pod-images' in your Supabase dashboard.");
+        setErrorMessage("Upload failed: Storage bucket 'pod-images' not found. Please create a public storage bucket named 'pod-images' in your Supabase dashboard.");
       } else {
-        alert("Upload failed: " + (err.message || "Unknown error occurred"));
+        setErrorMessage(err.message || "Unknown error occurred");
       }
       setStatus("Failed");
     } finally {
-      if (status !== "Upload complete!") {
+      if (!isSuccess) {
         setLoading(false);
       }
     }
@@ -224,7 +239,7 @@ export default function UploadPod({
             )}
           </div>
 
-          <AnimatePresence>
+          {errorMessage && !loading && (<motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="glass-card border border-red-500/30 bg-red-500/10 rounded-2xl p-4"><p className="text-sm text-red-400 font-medium text-center">{errorMessage}</p></motion.div>)}<AnimatePresence>
             {loading && (
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
@@ -250,7 +265,7 @@ export default function UploadPod({
                 {extractedNumbers.length > 0 && (
                   <div className="pt-4 border-t border-white/5">
                     <p className="text-[10px] text-white/30 uppercase tracking-widest mb-2">
-                      Found Numbers
+                      Detected AWB
                     </p>
                     <div className="flex flex-wrap gap-2">
                       {extractedNumbers.map((n) => (
