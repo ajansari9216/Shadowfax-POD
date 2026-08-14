@@ -8,9 +8,7 @@ import {
   CheckCircle2,
   X,
 } from "lucide-react";
-import { performOCR } from "../lib/ocr";
 import { motion, AnimatePresence } from "motion/react";
-import DocumentScanner from "./DocumentScanner";
 
 export default function UploadPod({
   onUploadComplete,
@@ -18,13 +16,11 @@ export default function UploadPod({
   onUploadComplete: () => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
-  const [showScanner, setShowScanner] = useState(false);
-  const [processedFile, setProcessedFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("");
   const [progress, setProgress] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [extractedNumbers, setExtractedNumbers] = useState<string[]>([]);
+  const [manualAwb, setManualAwb] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -35,8 +31,6 @@ export default function UploadPod({
       const selectedFile = e.target.files[0];
       setFile(selectedFile);
       setPreview(URL.createObjectURL(selectedFile));
-      setShowScanner(true);
-      setExtractedNumbers([]);
       setStatus("");
       setErrorMessage(null);
     }
@@ -45,39 +39,25 @@ export default function UploadPod({
   const clearSelection = () => {
     setFile(null);
     setPreview(null);
-    setProcessedFile(null);
-    setShowScanner(false);
-    setExtractedNumbers([]);
+    setManualAwb("");
     setStatus("");
     setErrorMessage(null);
   };
 
-  const handleScannerConfirm = async (processedSrc: string, original: File) => {
-    setShowScanner(false);
-    try {
-      const res = await fetch(processedSrc);
-      const blob = await res.blob();
-      const newFile = new File([blob], "scanned_pod.png", { type: "image/png" });
-      setProcessedFile(newFile); 
-    } catch (e) {
-      console.error(e);
-      setProcessedFile(original);
-    }
-    // Maintain original for preview and storage
-    setPreview(URL.createObjectURL(original));
-    setFile(original);
-  };
-
-  const handleScannerCancel = () => {
-    clearSelection();
-  };
-
-  const processAndUpload = async () => {
+  const handleUpload = async () => {
     if (!file || loading) return;
+    
+    setErrorMessage(null);
+    
+    const awb = manualAwb.trim();
+    if (!awb) {
+      setErrorMessage("AWB number is required");
+      return;
+    }
+
     setLoading(true);
     let isSuccess = false;
-    console.log("PROCESS START");
-
+    
     try {
       // Check authentication early before uploading
       const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -85,30 +65,9 @@ export default function UploadPod({
         throw new Error("You must be logged in to upload PODs.");
       }
 
-      // 1. Process for OCR
-      console.log("OCR START");
-      setStatus("Extracting AWB (OCR)...");
-      setProgress(20);
-
-      // We run OCR on the cropped/processed file if it exists, otherwise the original
-      const ocrTarget = processedFile || file;
-      const { text, numbers } = await performOCR(ocrTarget, (p) => {
-        setProgress(20 + p * 40);
-      });
-      
-      console.log("OCR COMPLETE");
-      setExtractedNumbers(numbers);
-
-      if (numbers.length === 0) {
-        throw new Error("AWB could not be detected. Please retake the photo.");
-      }
-      
-      console.log("AWB DETECTED", numbers);
-
-      // 2. Upload ORIGINAL image to Supabase Storage
-      console.log("UPLOAD START");
-      setStatus("Uploading original photo...");
-      setProgress(70);
+      // 1. Upload ORIGINAL image to Supabase Storage
+      setStatus("Uploading POD...");
+      setProgress(30);
 
       const fileExt = file.name ? file.name.split(".").pop() : "jpg";
       const filePath = `${user.id}/${Math.random().toString(36).substring(2)}_${Date.now()}.${fileExt}`;
@@ -118,37 +77,33 @@ export default function UploadPod({
         .upload(filePath, file);
 
       if (uploadError) {
-        console.error("Storage upload error:", uploadError);
         throw new Error(`Storage error: ${uploadError.message}`);
       }
-      console.log("UPLOAD COMPLETE");
+
+      setProgress(60);
 
       const { data: publicUrlData } = supabase.storage
         .from("pod-images")
         .getPublicUrl(filePath);
 
-      // 3. Save to Database
-      console.log("SAVE START");
+      // 2. Save to Database
       setStatus("Saving record to database...");
-      setProgress(90);
+      setProgress(80);
 
       const { error: dbError } = await supabase.from("pod_images").insert({
         user_id: user.id,
         image_url: publicUrlData.publicUrl,
-        ocr_text: text,
-        tracking_numbers: numbers,
+        ocr_text: "",
+        tracking_numbers: [awb],
       });
 
       if (dbError) {
-        console.error("Database insert error:", dbError);
         throw new Error(`Database error: ${dbError.message}`);
       }
-      console.log("SAVE COMPLETE");
 
       isSuccess = true;
-      setStatus("Upload complete!");
+      setStatus("POD uploaded successfully");
       setProgress(100);
-      console.log("PROCESS COMPLETE");
 
       setTimeout(() => {
         onUploadComplete();
@@ -156,7 +111,7 @@ export default function UploadPod({
     } catch (err: any) {
       console.error("Upload process failed:", err);
       if (err.message && err.message.includes("Bucket not found")) {
-        setErrorMessage("Upload failed: Storage bucket 'pod-images' not found. Please create a public storage bucket named 'pod-images' in your Supabase dashboard.");
+        setErrorMessage("Upload failed: Storage bucket 'pod-images' not found.");
       } else {
         setErrorMessage(err.message || "Unknown error occurred");
       }
@@ -170,14 +125,6 @@ export default function UploadPod({
 
   return (
     <div className="p-4 pt-8 h-full flex flex-col">
-      {showScanner && file ? (
-        <DocumentScanner
-          imageFile={file}
-          onCancel={handleScannerCancel}
-          onConfirm={handleScannerConfirm}
-        />
-      ) : null}
-      
       <div className="mb-6">
         <h2 className="text-2xl font-bold mb-1 tracking-tight">Upload POD</h2>
         <p className="text-sm text-white/50">
@@ -202,7 +149,7 @@ export default function UploadPod({
             className="hidden"
             onChange={handleFileSelect}
           />
-
+          
           <button
             onClick={() => cameraInputRef.current?.click()}
             className="w-full max-w-sm aspect-square glass border-2 border-dashed border-white/20 rounded-3xl flex flex-col items-center justify-center gap-4 hover:border-[#00FF66]/50 hover:bg-[#00FF66]/5 transition-all active:scale-[0.98]"
@@ -212,7 +159,7 @@ export default function UploadPod({
             </div>
             <span className="font-medium text-lg">Take Photo</span>
           </button>
-
+          
           <button
             onClick={() => fileInputRef.current?.click()}
             className="w-full max-w-sm glass border border-white/10 rounded-2xl p-4 flex items-center justify-center gap-3 hover:bg-white/5 transition-colors active:scale-[0.98]"
@@ -238,8 +185,30 @@ export default function UploadPod({
               </button>
             )}
           </div>
+          
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium text-white/70 ml-1">AWB Number</label>
+            <input
+              type="text"
+              value={manualAwb}
+              onChange={(e) => setManualAwb(e.target.value)}
+              placeholder="Enter or paste AWB number"
+              className="w-full bg-[#111] border border-[#333] rounded-xl py-3 px-4 text-white focus:outline-none focus:border-[#00FF66] focus:ring-1 focus:ring-[#00FF66] transition-all placeholder:text-white/30 text-sm"
+              disabled={loading}
+            />
+          </div>
 
-          {errorMessage && !loading && (<motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="glass-card border border-red-500/30 bg-red-500/10 rounded-2xl p-4"><p className="text-sm text-red-400 font-medium text-center">{errorMessage}</p></motion.div>)}<AnimatePresence>
+          {errorMessage && !loading && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }} 
+              animate={{ opacity: 1, y: 0 }} 
+              className="glass-card border border-red-500/30 bg-red-500/10 rounded-2xl p-4"
+            >
+              <p className="text-sm text-red-400 font-medium text-center">{errorMessage}</p>
+            </motion.div>
+          )}
+
+          <AnimatePresence>
             {loading && (
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
@@ -262,34 +231,17 @@ export default function UploadPod({
                     transition={{ ease: "linear", duration: 0.2 }}
                   />
                 </div>
-                {extractedNumbers.length > 0 && (
-                  <div className="pt-4 border-t border-white/5">
-                    <p className="text-[10px] text-white/30 uppercase tracking-widest mb-2">
-                      Detected AWB
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      {extractedNumbers.map((n) => (
-                        <span
-                          key={n}
-                          className="text-[10px] font-mono bg-[#00FF66]/10 text-[#00FF66] px-2 py-1 rounded border border-[#00FF66]/20"
-                        >
-                          {n}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </motion.div>
             )}
           </AnimatePresence>
 
           {!loading && (
             <button
-              onClick={processAndUpload}
+              onClick={handleUpload}
               className="w-full bg-[#00FF66] hover:bg-[#00e65c] text-black font-bold rounded-2xl py-4 flex items-center justify-center gap-2 active:scale-[0.98] transition-all mt-auto text-sm"
             >
               <UploadCloud className="w-5 h-5" />
-              Process & Upload
+              Upload POD
             </button>
           )}
         </div>
