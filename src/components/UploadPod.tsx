@@ -4,11 +4,16 @@ import {
   UploadCloud,
   Camera,
   Image as ImageIcon,
-  Loader2,
   CheckCircle2,
   X,
+  Plus,
+  Trash2,
+  ScanSearch,
+  Loader2,
+  Copy
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { detectAwbsInImage } from "../lib/ocr";
 
 export default function UploadPod({
   onUploadComplete,
@@ -18,13 +23,34 @@ export default function UploadPod({
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("");
+  const [subStatus, setSubStatus] = useState<string>("");
   const [progress, setProgress] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [manualAwb, setManualAwb] = useState<string>("");
+  const [awbs, setAwbs] = useState<string[]>([""]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  
+  const [activeAwbIndex, setActiveAwbIndex] = useState(0);
+
+  // OCR specific states
+  const [isFindingAwbs, setIsFindingAwbs] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [detectedAwbs, setDetectedAwbs] = useState<string[]>([]);
+  const [hasSearchedAwbs, setHasSearchedAwbs] = useState(false);
+  const [copiedAwb, setCopiedAwb] = useState<string | null>(null);
+
+  const handleCopyAwb = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedAwb(text);
+      setTimeout(() => setCopiedAwb(null), 2000);
+    } catch (err) {
+      console.error("Failed to copy:", err);
+    }
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+  const awbInputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -32,16 +58,95 @@ export default function UploadPod({
       setFile(selectedFile);
       setPreview(URL.createObjectURL(selectedFile));
       setStatus("");
+      setSubStatus("");
       setErrorMessage(null);
+      setActiveAwbIndex(0);
+      
+      // Reset OCR state
+      setDetectedAwbs([]);
+      setHasSearchedAwbs(false);
+      setIsFindingAwbs(false);
     }
   };
 
   const clearSelection = () => {
     setFile(null);
     setPreview(null);
-    setManualAwb("");
+    setAwbs([""]);
     setStatus("");
+    setSubStatus("");
     setErrorMessage(null);
+    
+    // Reset OCR state
+    setDetectedAwbs([]);
+    setHasSearchedAwbs(false);
+    setIsFindingAwbs(false);
+  };
+
+  const addAwbField = () => {
+    if (awbs.length < 20) {
+      setAwbs([...awbs, ""]);
+      setTimeout(() => {
+        const index = awbs.length; // Length is the new index
+        if (awbInputRefs.current[index]) {
+          awbInputRefs.current[index]?.focus();
+        }
+      }, 50);
+    }
+  };
+
+  const removeAwbField = (indexToRemove: number) => {
+    const newAwbs = awbs.filter((_, index) => index !== indexToRemove);
+    setAwbs(newAwbs.length > 0 ? newAwbs : [""]);
+  };
+
+  const updateAwbField = (index: number, value: string) => {
+    const newAwbs = [...awbs];
+    newAwbs[index] = value;
+    setAwbs(newAwbs);
+  };
+
+  const findAwbs = async () => {
+    if (!file) return;
+    setIsFindingAwbs(true);
+    setHasSearchedAwbs(true);
+    setOcrProgress(0);
+    
+    try {
+      const found = await detectAwbsInImage(file, (p) => setOcrProgress(p));
+      setDetectedAwbs(found);
+    } catch (err) {
+      console.error("OCR detection failed:", err);
+      // Fail silently for user, show the not found state
+      setDetectedAwbs([]);
+    } finally {
+      setIsFindingAwbs(false);
+    }
+  };
+
+  const handleAddDetectedAwb = (awb: string) => {
+    const currentCleaned = awbs.map(a => a.trim());
+    if (currentCleaned.includes(awb)) {
+      // Already added, just remove from suggestions
+      setDetectedAwbs(prev => prev.filter(a => a !== awb));
+      return;
+    }
+
+    const newAwbs = [...awbs];
+    const emptyIndex = newAwbs.findIndex(a => a.trim() === "");
+
+    if (emptyIndex !== -1) {
+      newAwbs[emptyIndex] = awb;
+    } else if (newAwbs.length < 20) {
+      newAwbs.push(awb);
+    } else {
+      setErrorMessage("Maximum 20 AWB numbers allowed.");
+      return;
+    }
+
+    setAwbs(newAwbs);
+    // Remove from suggestions list for checklist feel
+    setDetectedAwbs(prev => prev.filter(a => a !== awb));
   };
 
   const handleUpload = async () => {
@@ -49,9 +154,16 @@ export default function UploadPod({
     
     setErrorMessage(null);
     
-    const awb = manualAwb.trim();
-    if (!awb) {
-      setErrorMessage("AWB number is required");
+    // Clean and validate AWBs
+    const cleanedAwbs = awbs.map(a => a.trim()).filter(a => a !== "");
+    
+    if (cleanedAwbs.length === 0) {
+      setErrorMessage("Please enter at least one AWB number.");
+      return;
+    }
+
+    if (new Set(cleanedAwbs).size !== cleanedAwbs.length) {
+      setErrorMessage("Duplicate AWB number.");
       return;
     }
 
@@ -59,14 +171,13 @@ export default function UploadPod({
     let isSuccess = false;
     
     try {
-      // Check authentication early before uploading
       const { data: { user }, error: authError } = await supabase.auth.getUser();
       if (authError || !user) {
         throw new Error("You must be logged in to upload PODs.");
       }
 
-      // 1. Upload ORIGINAL image to Supabase Storage
       setStatus("Uploading POD...");
+      setSubStatus(`Saving ${cleanedAwbs.length} AWB numbers...`);
       setProgress(30);
 
       const fileExt = file.name ? file.name.split(".").pop() : "jpg";
@@ -86,16 +197,16 @@ export default function UploadPod({
         .from("pod-images")
         .getPublicUrl(filePath);
 
-      // 2. Save to Database
-      setStatus("Saving record to database...");
       setProgress(80);
 
-      const { error: dbError } = await supabase.from("pod_images").insert({
+      const insertPayload = cleanedAwbs.map(awb => ({
         user_id: user.id,
         image_url: publicUrlData.publicUrl,
         ocr_text: "",
         tracking_numbers: [awb],
-      });
+      }));
+
+      const { error: dbError } = await supabase.from("pod_images").insert(insertPayload);
 
       if (dbError) {
         throw new Error(`Database error: ${dbError.message}`);
@@ -103,6 +214,7 @@ export default function UploadPod({
 
       isSuccess = true;
       setStatus("POD uploaded successfully");
+      setSubStatus(`${cleanedAwbs.length} AWB numbers saved`);
       setProgress(100);
 
       setTimeout(() => {
@@ -116,6 +228,7 @@ export default function UploadPod({
         setErrorMessage(err.message || "Unknown error occurred");
       }
       setStatus("Failed");
+      setSubStatus("");
     } finally {
       if (!isSuccess) {
         setLoading(false);
@@ -171,11 +284,16 @@ export default function UploadPod({
       ) : (
         <div className="flex-1 flex flex-col gap-4">
           <div className="relative rounded-3xl overflow-hidden bg-black border border-white/10 shadow-2xl aspect-[3/4] sm:aspect-[4/3] flex-shrink-0">
+            {/* Block native image copy/share menus completely */}
             <img
               src={preview}
               alt="Preview"
-              className="w-full h-full object-contain"
+              className="w-full h-full object-contain select-none"
+              style={{ WebkitTouchCallout: "none", WebkitUserSelect: "none" }}
+              onContextMenu={(e) => e.preventDefault()}
+              draggable={false}
             />
+            
             {!loading && (
               <button
                 onClick={clearSelection}
@@ -186,16 +304,118 @@ export default function UploadPod({
             )}
           </div>
           
-          <div className="flex flex-col gap-2">
-            <label className="text-sm font-medium text-white/70 ml-1">AWB Number</label>
-            <input
-              type="text"
-              value={manualAwb}
-              onChange={(e) => setManualAwb(e.target.value)}
-              placeholder="Enter or paste AWB number"
-              className="w-full bg-[#111] border border-[#333] rounded-xl py-3 px-4 text-white focus:outline-none focus:border-[#00FF66] focus:ring-1 focus:ring-[#00FF66] transition-all placeholder:text-white/30 text-sm"
-              disabled={loading}
-            />
+          <div className="flex flex-col gap-3">
+            {/* OCR Helper Section */}
+            {!loading && (
+              <div className="mb-2">
+                {isFindingAwbs ? (
+                  <div className="flex items-center justify-center p-4 gap-3 bg-white/5 rounded-xl border border-white/10">
+                    <Loader2 className="w-5 h-5 animate-spin text-[#00FF66]" />
+                    <span className="text-sm font-medium text-[#00FF66]">Finding AWB Numbers... {Math.round(ocrProgress * 100)}%</span>
+                  </div>
+                ) : detectedAwbs.length > 0 ? (
+                  <div className="bg-[#111] border border-white/10 rounded-xl p-4 flex flex-col gap-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-medium text-white/70">Detected AWB Numbers</h3>
+                      <button onClick={() => setDetectedAwbs([])} className="text-xs text-white/40 hover:text-white">Clear</button>
+                    </div>
+                    <div className="flex flex-col gap-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                      {detectedAwbs.map(awb => (
+                        <div key={awb} className="flex justify-between items-center glass p-2 rounded-lg relative">
+                          <span className="font-mono text-[#00FF66] text-sm tracking-wide">{awb}</span>
+                          <div className="flex gap-2 items-center">
+                            {copiedAwb === awb && (
+                              <span className="text-[10px] text-[#00FF66] absolute right-32 animate-in fade-in slide-in-from-right-2">
+                                AWB copied
+                              </span>
+                            )}
+                            <button
+                              onClick={() => handleCopyAwb(awb)}
+                              className="bg-white/5 hover:bg-white/10 text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors flex items-center gap-1"
+                            >
+                              <Copy className="w-3 h-3" />
+                              Copy
+                            </button>
+                            <button
+                              onClick={() => handleAddDetectedAwb(awb)}
+                              className="bg-white/10 hover:bg-[#00FF66]/20 text-white hover:text-[#00FF66] text-xs font-medium px-3 py-1.5 rounded-md transition-colors"
+                            >
+                              Add
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-white/40 leading-tight">
+                      Verify numbers before adding. OCR is an assistive helper only.
+                    </p>
+                  </div>
+                ) : hasSearchedAwbs ? (
+                   <div className="bg-[#111] border border-white/10 rounded-xl p-4 flex flex-col gap-2 items-center text-center">
+                     <span className="text-sm text-yellow-400">AWB not detected. Enter it manually.</span>
+                   </div>
+                ) : (
+                  <button
+                    onClick={findAwbs}
+                    className="w-full bg-[#00FF66]/10 hover:bg-[#00FF66]/20 border border-[#00FF66]/30 text-[#00FF66] px-5 py-3.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-colors shadow-lg"
+                  >
+                    <ScanSearch className="w-5 h-5" />
+                    Find AWB Numbers
+                  </button>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-between items-center ml-1">
+              <label className="text-sm font-medium text-white/70">AWB Numbers</label>
+              <span className="text-xs font-mono text-white/50 bg-white/5 px-2 py-1 rounded-md">
+                AWB: {awbs.length} / 20
+              </span>
+            </div>
+            
+            <div className="flex flex-col gap-2 max-h-[30vh] overflow-y-auto pr-1 custom-scrollbar">
+              {awbs.map((awb, index) => (
+                <div key={index} className="flex gap-2">
+                  <input
+                    type="text"
+                    ref={(el) => (awbInputRefs.current[index] = el)}
+                    value={awb}
+                    onChange={(e) => updateAwbField(index, e.target.value)}
+                    onFocus={() => setActiveAwbIndex(index)}
+                    placeholder="Enter or paste AWB number"
+                    className={`flex-1 bg-[#111] border rounded-xl py-3 px-4 text-white focus:outline-none transition-all placeholder:text-white/30 text-sm ${
+                      activeAwbIndex === index 
+                        ? "border-[#00FF66] ring-1 ring-[#00FF66]" 
+                        : "border-[#333] focus:border-[#00FF66] focus:ring-1 focus:ring-[#00FF66]"
+                    }`}
+                    disabled={loading}
+                  />
+                  <button
+                    onClick={() => removeAwbField(index)}
+                    disabled={loading}
+                    className="w-12 flex-shrink-0 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-xl flex items-center justify-center text-red-500 transition-colors disabled:opacity-50"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {!loading && awbs.length >= 20 && (
+              <p className="text-xs text-yellow-500 text-center py-2">
+                Maximum 20 AWB numbers allowed.
+              </p>
+            )}
+
+            {!loading && awbs.length < 20 && (
+              <button
+                onClick={addAwbField}
+                className="w-full py-3 border border-dashed border-white/20 rounded-xl text-sm font-medium text-white/70 hover:bg-white/5 hover:text-white transition-colors flex items-center justify-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                Add AWB
+              </button>
+            )}
           </div>
 
           {errorMessage && !loading && (
@@ -215,11 +435,16 @@ export default function UploadPod({
                 animate={{ opacity: 1, y: 0 }}
                 className="glass-card border border-white/10 rounded-2xl p-5 space-y-4"
               >
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm font-medium text-[#00FF66]">
+                <div className="flex flex-col mb-2 relative">
+                  <span className="text-sm font-medium text-[#00FF66] mb-1">
                     {status}
                   </span>
-                  <span className="text-sm text-white/50 font-mono">
+                  {subStatus && (
+                    <span className="text-xs font-medium text-white/70">
+                      {subStatus}
+                    </span>
+                  )}
+                  <span className="absolute right-0 top-0 text-sm text-white/50 font-mono">
                     {Math.round(progress)}%
                   </span>
                 </div>
