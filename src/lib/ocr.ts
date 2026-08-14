@@ -18,14 +18,33 @@ export const extractWordsFromImage = async (
     },
   });
 
-  const ret = await worker.recognize(imageFile);
+  const ret = await worker.recognize(imageFile, {}, { blocks: true });
   await worker.terminate();
 
-  return (ret.data as any).words.map((w: any) => ({
-    text: w.text,
-    confidence: w.confidence,
-    bbox: w.bbox,
-  }));
+  const words: OcrWord[] = [];
+  if (ret.data.blocks) {
+    for (const block of ret.data.blocks) {
+      if (block.paragraphs) {
+        for (const paragraph of block.paragraphs) {
+          if (paragraph.lines) {
+            for (const line of paragraph.lines) {
+              if (line.words) {
+                for (const word of line.words) {
+                  words.push({
+                    text: word.text,
+                    confidence: word.confidence,
+                    bbox: word.bbox,
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return words;
 };
 
 export const detectAwbsInImage = async (
