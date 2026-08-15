@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { detectAwbBoxesInImage, OcrWord } from "../lib/ocr";
+import { LiveCamera } from "./LiveCamera";
 
 export default function UploadPod({
   onUploadComplete,
@@ -28,6 +29,7 @@ export default function UploadPod({
   const [loading, setLoading] = useState(false);
   const [awbs, setAwbs] = useState<string[]>([""]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [showLiveCamera, setShowLiveCamera] = useState(false);
   
   const [activeAwbIndex, setActiveAwbIndex] = useState(0);
 
@@ -115,6 +117,30 @@ export default function UploadPod({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const awbInputRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  const handleLiveCapture = (capturedFile: File) => {
+    setShowLiveCamera(false);
+    setFile(capturedFile);
+    setPreview(URL.createObjectURL(capturedFile));
+    setStatus("");
+    setSubStatus("");
+    setErrorMessage(null);
+    setImageWords([]);
+    
+    // Auto-start scanning
+    setTimeout(() => {
+      setIsFindingAwbs(true);
+      setOcrProgress(0);
+      detectAwbBoxesInImage(capturedFile, (p) => setOcrProgress(p))
+        .then(words => {
+          setImageWords(words);
+        })
+        .catch(err => {
+          console.error("OCR detection failed:", err);
+        })
+        .finally(() => setIsFindingAwbs(false));
+    }, 500);
+  };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -271,6 +297,12 @@ export default function UploadPod({
 
   return (
     <div className="p-4 pt-8 h-full flex flex-col">
+      {showLiveCamera && (
+        <LiveCamera 
+          onCapture={handleLiveCapture} 
+          onClose={() => setShowLiveCamera(false)} 
+        />
+      )}
       <div className="mb-6">
         <h2 className="text-2xl font-bold mb-1 tracking-tight">Upload POD</h2>
         <p className="text-sm text-white/50">
@@ -297,13 +329,17 @@ export default function UploadPod({
           />
           
           <button
-            onClick={() => cameraInputRef.current?.click()}
+            onClick={() => setShowLiveCamera(true)}
             className="w-full max-w-sm aspect-square glass border-2 border-dashed border-white/20 rounded-3xl flex flex-col items-center justify-center gap-4 hover:border-[#00FF66]/50 hover:bg-[#00FF66]/5 transition-all active:scale-[0.98]"
           >
-            <div className="w-20 h-20 bg-black rounded-full flex items-center justify-center border border-white/10">
-              <Camera className="w-10 h-10 text-white" />
+            <div className="w-20 h-20 bg-black rounded-full flex items-center justify-center border border-white/10 relative overflow-hidden">
+              <Camera className="w-10 h-10 text-white relative z-10" />
+              <div className="absolute inset-0 border-4 border-[#00FF66] rounded-full scale-110 opacity-20"></div>
             </div>
-            <span className="font-medium text-lg">Take Photo</span>
+            <div className="flex flex-col items-center">
+              <span className="font-medium text-lg">Smart Camera</span>
+              <span className="text-xs text-[#00FF66] font-medium mt-1">Focus Mode</span>
+            </div>
           </button>
           
           <button
