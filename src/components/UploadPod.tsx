@@ -13,7 +13,7 @@ import {
   Copy
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { detectAwbsInImage } from "../lib/ocr";
+import { detectAwbBoxesInImage, OcrWord } from "../lib/ocr";
 
 export default function UploadPod({
   onUploadComplete,
@@ -31,14 +31,42 @@ export default function UploadPod({
   
   const [activeAwbIndex, setActiveAwbIndex] = useState(0);
 
-  // OCR specific states
+  // On-image OCR states
   const [isFindingAwbs, setIsFindingAwbs] = useState(false);
   const [ocrProgress, setOcrProgress] = useState(0);
-  const [detectedAwbs, setDetectedAwbs] = useState<string[]>([]);
-  const [hasSearchedAwbs, setHasSearchedAwbs] = useState(false);
+  const [imageWords, setImageWords] = useState<OcrWord[]>([]);
   const [copiedAwb, setCopiedAwb] = useState<string | null>(null);
+  const [imgDims, setImgDims] = useState({ w: 0, h: 0, nw: 0, nh: 0 });
+  const imgRef = useRef<HTMLImageElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  const handleCopyAwb = async (text: string) => {
+  const updateDimensions = () => {
+    if (imgRef.current && containerRef.current) {
+      const { naturalWidth: nw, naturalHeight: nh } = imgRef.current;
+      const { clientWidth: cw, clientHeight: ch } = containerRef.current;
+      if (!nw || !nh || !cw || !ch) return;
+      
+      const containerRatio = cw / ch;
+      const imgRatio = nw / nh;
+      let w, h;
+      if (imgRatio > containerRatio) {
+        w = cw;
+        h = cw / imgRatio;
+      } else {
+        h = ch;
+        w = ch * imgRatio;
+      }
+      setImgDims({ w, h, nw, nh });
+    }
+  };
+
+  React.useEffect(() => {
+    window.addEventListener("resize", updateDimensions);
+    return () => window.removeEventListener("resize", updateDimensions);
+  }, []);
+
+  const handleCopyAwb = async (rawText: string) => {
+    const text = rawText.replace(/[^A-Z0-9]/gi, "").toUpperCase();
     try {
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(text);
@@ -59,6 +87,26 @@ export default function UploadPod({
       }
       setCopiedAwb(text);
       setTimeout(() => setCopiedAwb(null), 2000);
+      
+      // Auto-add to empty field
+      setAwbs(currentAwbs => {
+        const newAwbs = [...currentAwbs];
+        const currentCleaned = newAwbs.map(a => a.trim());
+        if (currentCleaned.includes(text)) {
+          return currentAwbs; // already exists
+        }
+        
+        const emptyIndex = newAwbs.findIndex(a => a.trim() === "");
+        if (emptyIndex !== -1) {
+          newAwbs[emptyIndex] = text;
+        } else if (newAwbs.length < 20) {
+          newAwbs.push(text);
+        } else {
+          setErrorMessage("Maximum 20 AWB numbers allowed.");
+        }
+        return newAwbs;
+      });
+      
     } catch (err) {
       console.error("Failed to copy:", err);
     }
@@ -79,9 +127,20 @@ export default function UploadPod({
       setActiveAwbIndex(0);
       
       // Reset OCR state
-      setDetectedAwbs([]);
-      setHasSearchedAwbs(false);
-      setIsFindingAwbs(false);
+      setImageWords([]);
+      setIsFindingAwbs(true);
+      setOcrProgress(0);
+
+      detectAwbBoxesInImage(selectedFile, (p) => setOcrProgress(p))
+        .then(words => {
+          setImageWords(words);
+        })
+        .catch(err => {
+          console.error("OCR detection failed:", err);
+        })
+        .finally(() => {
+          setIsFindingAwbs(false);
+        });
     }
   };
 
@@ -94,8 +153,7 @@ export default function UploadPod({
     setErrorMessage(null);
     
     // Reset OCR state
-    setDetectedAwbs([]);
-    setHasSearchedAwbs(false);
+    setImageWords([]);
     setIsFindingAwbs(false);
   };
 
@@ -122,48 +180,7 @@ export default function UploadPod({
     setAwbs(newAwbs);
   };
 
-  const findAwbs = async () => {
-    if (!file) return;
-    setIsFindingAwbs(true);
-    setHasSearchedAwbs(true);
-    setOcrProgress(0);
-    
-    try {
-      const found = await detectAwbsInImage(file, (p) => setOcrProgress(p));
-      setDetectedAwbs(found);
-    } catch (err) {
-      console.error("OCR detection failed:", err);
-      // Fail silently for user, show the not found state
-      setDetectedAwbs([]);
-    } finally {
-      setIsFindingAwbs(false);
-    }
-  };
-
-  const handleAddDetectedAwb = (awb: string) => {
-    const currentCleaned = awbs.map(a => a.trim());
-    if (currentCleaned.includes(awb)) {
-      // Already added, just remove from suggestions
-      setDetectedAwbs(prev => prev.filter(a => a !== awb));
-      return;
-    }
-
-    const newAwbs = [...awbs];
-    const emptyIndex = newAwbs.findIndex(a => a.trim() === "");
-
-    if (emptyIndex !== -1) {
-      newAwbs[emptyIndex] = awb;
-    } else if (newAwbs.length < 20) {
-      newAwbs.push(awb);
-    } else {
-      setErrorMessage("Maximum 20 AWB numbers allowed.");
-      return;
-    }
-
-    setAwbs(newAwbs);
-    // Remove from suggestions list for checklist feel
-    setDetectedAwbs(prev => prev.filter(a => a !== awb));
-  };
+  
 
   const handleUpload = async () => {
     if (!file || loading) return;
@@ -299,88 +316,95 @@ export default function UploadPod({
         </div>
       ) : (
         <div className="flex-1 flex flex-col gap-4">
-          <div className="relative rounded-3xl overflow-hidden bg-black border border-white/10 shadow-2xl aspect-[3/4] sm:aspect-[4/3] flex-shrink-0">
-            {/* Block native image copy/share menus completely */}
-            <img
-              src={preview}
-              alt="Preview"
-              className="w-full h-full object-contain select-none"
-              style={{ WebkitTouchCallout: "none", WebkitUserSelect: "none" }}
-              onContextMenu={(e) => e.preventDefault()}
-              draggable={false}
-            />
+          <div 
+            ref={containerRef}
+            className="relative rounded-3xl overflow-hidden bg-black border border-white/10 shadow-2xl aspect-[3/4] sm:aspect-[4/3] flex-shrink-0 flex items-center justify-center"
+          >
+            {/* Inner wrapper perfectly sized to the image to map OCR absolute coordinates */}
+            <div className="relative" style={{ width: imgDims.w || '100%', height: imgDims.h || '100%' }}>
+              <img
+                ref={imgRef}
+                src={preview}
+                alt="Preview"
+                onLoad={updateDimensions}
+                className="w-full h-full object-contain select-none pointer-events-none"
+                style={{ WebkitTouchCallout: "none", WebkitUserSelect: "none" }}
+                onContextMenu={(e) => e.preventDefault()}
+                draggable={false}
+              />
+              
+              {/* Tappable OCR Overlays */}
+              {imgDims.w > 0 && imgDims.nw > 0 && [...imageWords].sort((a, b) => {
+                  const areaA = (a.bbox.x1 - a.bbox.x0) * (a.bbox.y1 - a.bbox.y0);
+                  const areaB = (b.bbox.x1 - b.bbox.x0) * (b.bbox.y1 - b.bbox.y0);
+                  return areaB - areaA;
+                }).map((word, i) => {
+                const scaleX = imgDims.w / imgDims.nw;
+                const scaleY = imgDims.h / imgDims.nh;
+                const left = word.bbox.x0 * scaleX;
+                const top = word.bbox.y0 * scaleY;
+                const width = (word.bbox.x1 - word.bbox.x0) * scaleX;
+                const height = (word.bbox.y1 - word.bbox.y0) * scaleY;
+                
+                // Expand hit area slightly for mobile tap targets
+                const padding = 16;
+                const hitAreaStyle = {
+                  left: left - padding,
+                  top: top - padding,
+                  width: width + padding * 2,
+                  height: height + padding * 2,
+                };
+                
+                return (
+                  <div
+                    key={i}
+                    onPointerDown={(e) => { 
+                      e.preventDefault();
+                      e.stopPropagation(); 
+                      handleCopyAwb(word.text); 
+                    }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    className="absolute cursor-pointer flex items-center justify-center group touch-none"
+                    style={hitAreaStyle}
+                  >
+                    {/* Visual Box */}
+                    <div 
+                      className="absolute rounded border border-[#00FF66]/50 bg-[#00FF66]/10 group-hover:bg-[#00FF66]/30 group-hover:border-[#00FF66] group-active:bg-[#00FF66]/50 transition-colors"
+                      style={{ width, height }}
+                    />
+
+                    {copiedAwb === word.text.replace(/[^A-Z0-9]/gi, "").toUpperCase() && (
+                      <div className="absolute -top-8 left-1/2 -translate-x-1/2 z-50 bg-[#00FF66] text-black text-[10px] font-bold px-2 py-1 rounded shadow-lg whitespace-nowrap animate-in fade-in zoom-in slide-in-from-bottom-2 pointer-events-none">
+                        AWB copied
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
             
             {!loading && (
               <button
-                onClick={clearSelection}
-                className="absolute top-4 right-4 w-10 h-10 glass rounded-full flex items-center justify-center text-white hover:bg-red-500/80 transition-colors"
+                onClick={(e) => { e.stopPropagation(); clearSelection(); }}
+                className="absolute top-4 right-4 w-10 h-10 glass rounded-full flex items-center justify-center text-white hover:bg-red-500/80 transition-colors z-50"
               >
                 <X className="w-5 h-5" />
               </button>
             )}
+
+            {isFindingAwbs && (
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center justify-center px-4 py-2 gap-2 bg-black/80 backdrop-blur-md rounded-full border border-white/10 z-50 shadow-xl">
+                <Loader2 className="w-4 h-4 animate-spin text-[#00FF66]" />
+                <span className="text-xs font-medium text-[#00FF66]">Scanning AWBs... {Math.round(ocrProgress * 100)}%</span>
+              </div>
+            )}
           </div>
           
           <div className="flex flex-col gap-3">
-            {/* OCR Helper Section */}
-            {!loading && (
-              <div className="mb-2">
-                {isFindingAwbs ? (
-                  <div className="flex items-center justify-center p-4 gap-3 bg-white/5 rounded-xl border border-white/10">
-                    <Loader2 className="w-5 h-5 animate-spin text-[#00FF66]" />
-                    <span className="text-sm font-medium text-[#00FF66]">Finding AWB Numbers... {Math.round(ocrProgress * 100)}%</span>
-                  </div>
-                ) : detectedAwbs.length > 0 ? (
-                  <div className="bg-[#111] border border-white/10 rounded-xl p-4 flex flex-col gap-3">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-medium text-white/70">Detected AWB Numbers</h3>
-                      <button onClick={() => setDetectedAwbs([])} className="text-xs text-white/40 hover:text-white">Clear</button>
-                    </div>
-                    <div className="flex flex-col gap-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
-                      {detectedAwbs.map(awb => (
-                        <div key={awb} className="flex justify-between items-center glass p-2 rounded-lg relative">
-                          <span className="font-mono text-[#00FF66] text-sm tracking-wide">{awb}</span>
-                          <div className="flex gap-2 items-center">
-                            {copiedAwb === awb && (
-                              <span className="text-[10px] text-[#00FF66] absolute right-32 animate-in fade-in slide-in-from-right-2">
-                                AWB copied
-                              </span>
-                            )}
-                            <button
-                              onClick={() => handleCopyAwb(awb)}
-                              className="bg-white/5 hover:bg-white/10 text-white text-xs font-medium px-3 py-1.5 rounded-md transition-colors flex items-center gap-1"
-                            >
-                              <Copy className="w-3 h-3" />
-                              Copy
-                            </button>
-                            <button
-                              onClick={() => handleAddDetectedAwb(awb)}
-                              className="bg-white/10 hover:bg-[#00FF66]/20 text-white hover:text-[#00FF66] text-xs font-medium px-3 py-1.5 rounded-md transition-colors"
-                            >
-                              Add
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    <p className="text-[10px] text-white/40 leading-tight">
-                      Verify numbers before adding. OCR is an assistive helper only.
-                    </p>
-                  </div>
-                ) : hasSearchedAwbs ? (
-                   <div className="bg-[#111] border border-white/10 rounded-xl p-4 flex flex-col gap-2 items-center text-center">
-                     <span className="text-sm text-yellow-400">AWB not detected. Enter it manually.</span>
-                   </div>
-                ) : (
-                  <button
-                    onClick={findAwbs}
-                    className="w-full bg-[#00FF66]/10 hover:bg-[#00FF66]/20 border border-[#00FF66]/30 text-[#00FF66] px-5 py-3.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-colors shadow-lg"
-                  >
-                    <ScanSearch className="w-5 h-5" />
-                    Find AWB Numbers
-                  </button>
-                )}
-              </div>
-            )}
+            {/* The AWB lists and manual input remain untouched below */}
 
             <div className="flex justify-between items-center ml-1">
               <label className="text-sm font-medium text-white/70">AWB Numbers</label>
