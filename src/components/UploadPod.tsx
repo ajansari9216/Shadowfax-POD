@@ -13,7 +13,7 @@ import {
   Copy
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { detectAwbsInImage, extractWordsFromImage, OcrWord } from "../lib/ocr";
+import { detectAwbsInImage } from "../lib/ocr";
 
 export default function UploadPod({
   onUploadComplete,
@@ -38,41 +38,25 @@ export default function UploadPod({
   const [hasSearchedAwbs, setHasSearchedAwbs] = useState(false);
   const [copiedAwb, setCopiedAwb] = useState<string | null>(null);
 
-  // On-image OCR states
-  const [imageWords, setImageWords] = useState<OcrWord[]>([]);
-  const [selectedWord, setSelectedWord] = useState<OcrWord | null>(null);
-  const [imgDims, setImgDims] = useState({ w: 0, h: 0, nw: 0, nh: 0 });
-  const imgRef = useRef<HTMLImageElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  const updateDimensions = () => {
-    if (imgRef.current && containerRef.current) {
-      const { naturalWidth: nw, naturalHeight: nh } = imgRef.current;
-      const { clientWidth: cw, clientHeight: ch } = containerRef.current;
-      if (!nw || !nh || !cw || !ch) return;
-      
-      const containerRatio = cw / ch;
-      const imgRatio = nw / nh;
-      let w, h;
-      if (imgRatio > containerRatio) {
-        w = cw;
-        h = cw / imgRatio;
-      } else {
-        h = ch;
-        w = ch * imgRatio;
-      }
-      setImgDims({ w, h, nw, nh });
-    }
-  };
-
-  React.useEffect(() => {
-    window.addEventListener("resize", updateDimensions);
-    return () => window.removeEventListener("resize", updateDimensions);
-  }, []);
-
   const handleCopyAwb = async (text: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "absolute";
+        textArea.style.left = "-999999px";
+        document.body.prepend(textArea);
+        textArea.select();
+        try {
+          document.execCommand("copy");
+        } catch (error) {
+          console.error(error);
+        } finally {
+          textArea.remove();
+        }
+      }
       setCopiedAwb(text);
       setTimeout(() => setCopiedAwb(null), 2000);
     } catch (err) {
@@ -98,18 +82,6 @@ export default function UploadPod({
       setDetectedAwbs([]);
       setHasSearchedAwbs(false);
       setIsFindingAwbs(false);
-      setImageWords([]);
-      setSelectedWord(null);
-      
-      // Background OCR for on-image tap selection
-      extractWordsFromImage(selectedFile).then((words) => {
-        // Filter out tiny words that aren't AWB candidates to avoid too many hit boxes
-        const isAwbLike = (text: string) => {
-          const clean = text.replace(/[^A-Z0-9]/gi, "").toUpperCase();
-          return clean.length >= 8 && clean.length <= 25 && /[0-9]/.test(clean);
-        };
-        setImageWords(words.filter(w => isAwbLike(w.text)));
-      }).catch(err => console.error("Background OCR failed:", err));
     }
   };
 
@@ -125,8 +97,6 @@ export default function UploadPod({
     setDetectedAwbs([]);
     setHasSearchedAwbs(false);
     setIsFindingAwbs(false);
-    setImageWords([]);
-    setSelectedWord(null);
   };
 
   const addAwbField = () => {
@@ -329,68 +299,21 @@ export default function UploadPod({
         </div>
       ) : (
         <div className="flex-1 flex flex-col gap-4">
-          <div 
-            ref={containerRef}
-            onClick={() => setSelectedWord(null)} // Click outside to clear selection
-            className="relative rounded-3xl overflow-hidden bg-black border border-white/10 shadow-2xl aspect-[3/4] sm:aspect-[4/3] flex-shrink-0 flex items-center justify-center"
-          >
-            {/* Inner wrapper perfectly sized to the image to map OCR absolute coordinates */}
-            <div className="relative" style={{ width: imgDims.w || '100%', height: imgDims.h || '100%' }}>
-              <img
-                ref={imgRef}
-                src={preview}
-                alt="Preview"
-                onLoad={updateDimensions}
-                className="w-full h-full object-contain select-none pointer-events-none"
-                style={{ WebkitTouchCallout: "none", WebkitUserSelect: "none" }}
-                onContextMenu={(e) => e.preventDefault()}
-                draggable={false}
-              />
-              
-              {/* Tappable OCR Overlays */}
-              {imgDims.w > 0 && imgDims.nw > 0 && imageWords.map((word, i) => {
-                const scaleX = imgDims.w / imgDims.nw;
-                const scaleY = imgDims.h / imgDims.nh;
-                const left = word.bbox.x0 * scaleX;
-                const top = word.bbox.y0 * scaleY;
-                const width = (word.bbox.x1 - word.bbox.x0) * scaleX;
-                const height = (word.bbox.y1 - word.bbox.y0) * scaleY;
-                
-                return (
-                  <div
-                    key={i}
-                    onClick={(e) => { e.stopPropagation(); setSelectedWord(word); }}
-                    className={`absolute cursor-pointer rounded border ${selectedWord === word ? 'bg-[#00FF66]/20 border-[#00FF66]' : 'bg-transparent border-transparent'}`}
-                    style={{ left, top, width, height }}
-                  >
-                    {selectedWord === word && (
-                      <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 z-50 bg-[#111] border border-white/20 shadow-xl rounded-xl p-2 flex flex-col items-center gap-2 pointer-events-auto">
-                        <span className="text-[#00FF66] font-mono text-sm px-2 tracking-wide whitespace-nowrap">
-                          {word.text}
-                        </span>
-                        <div className="flex gap-2 w-full">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleCopyAwb(word.text);
-                            }}
-                            className="flex-1 bg-white/10 hover:bg-[#00FF66]/20 text-white hover:text-[#00FF66] text-xs font-bold py-2 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
-                          >
-                            {copiedAwb === word.text ? <CheckCircle2 className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                            {copiedAwb === word.text ? "Copied" : "Copy AWB"}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+          <div className="relative rounded-3xl overflow-hidden bg-black border border-white/10 shadow-2xl aspect-[3/4] sm:aspect-[4/3] flex-shrink-0">
+            {/* Block native image copy/share menus completely */}
+            <img
+              src={preview}
+              alt="Preview"
+              className="w-full h-full object-contain select-none"
+              style={{ WebkitTouchCallout: "none", WebkitUserSelect: "none" }}
+              onContextMenu={(e) => e.preventDefault()}
+              draggable={false}
+            />
             
             {!loading && (
               <button
-                onClick={(e) => { e.stopPropagation(); clearSelection(); }}
-                className="absolute top-4 right-4 w-10 h-10 glass rounded-full flex items-center justify-center text-white hover:bg-red-500/80 transition-colors z-50"
+                onClick={clearSelection}
+                className="absolute top-4 right-4 w-10 h-10 glass rounded-full flex items-center justify-center text-white hover:bg-red-500/80 transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
