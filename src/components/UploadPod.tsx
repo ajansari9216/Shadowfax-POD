@@ -158,6 +158,10 @@ export default function UploadPod({
       detectAwbBoxesInImage(capturedFile, (p) => setOcrProgress(p))
         .then(words => {
           setImageWords(words);
+          if (words.length > 0) {
+            const uniqueDetected = Array.from(new Set(words.map(w => w.text.replace(/[^A-Z0-9]/gi, "").toUpperCase())));
+            setAwbs(uniqueDetected.slice(0, 20));
+          }
         })
         .catch(err => {
           console.error("OCR detection failed:", err);
@@ -184,6 +188,10 @@ export default function UploadPod({
       detectAwbBoxesInImage(selectedFile, (p) => setOcrProgress(p))
         .then(words => {
           setImageWords(words);
+          if (words.length > 0) {
+            const uniqueDetected = Array.from(new Set(words.map(w => w.text.replace(/[^A-Z0-9]/gi, "").toUpperCase())));
+            setAwbs(uniqueDetected.slice(0, 20));
+          }
         })
         .catch(err => {
           console.error("OCR detection failed:", err);
@@ -241,7 +249,7 @@ export default function UploadPod({
     const cleanedAwbs = awbs.map(a => a.trim()).filter(a => a !== "");
     
     if (cleanedAwbs.length === 0) {
-      setErrorMessage("Please enter at least one AWB number.");
+      setErrorMessage(imageWords.length > 0 ? "Please select at least one AWB." : "Please enter at least one AWB number.");
       return;
     }
 
@@ -500,60 +508,62 @@ export default function UploadPod({
             </div>
           )}
 
-          <div className="flex flex-col gap-3 mt-2">
-            {/* The AWB lists and manual input remain untouched below */}
+          {imageWords.length === 0 && (
+            <div className="flex flex-col gap-3 mt-2">
+              {/* The AWB lists and manual input remain untouched below */}
 
-            <div className="flex justify-between items-center ml-1">
-              <label className="text-sm font-medium text-white/70">AWB Numbers</label>
-              <span className="text-xs font-mono text-white/50 bg-white/5 px-2 py-1 rounded-md">
-                AWB: {awbs.length} / 20
-              </span>
+              <div className="flex justify-between items-center ml-1">
+                <label className="text-sm font-medium text-white/70">AWB Numbers</label>
+                <span className="text-xs font-mono text-white/50 bg-white/5 px-2 py-1 rounded-md">
+                  AWB: {awbs.length} / 20
+                </span>
+              </div>
+              
+              <div className="flex flex-col gap-2 max-h-[30vh] overflow-y-auto pr-1 custom-scrollbar">
+                {awbs.map((awb, index) => (
+                  <div key={index} className="flex gap-2">
+                    <input
+                      type="text"
+                      ref={(el) => (awbInputRefs.current[index] = el)}
+                      value={awb}
+                      onChange={(e) => updateAwbField(index, e.target.value)}
+                      onFocus={() => setActiveAwbIndex(index)}
+                      placeholder="Enter or paste AWB number"
+                      className={`flex-1 bg-[#111] border rounded-xl py-3 px-4 text-white focus:outline-none transition-all placeholder:text-white/30 text-sm ${
+                        activeAwbIndex === index 
+                          ? "border-[#00FF66] ring-1 ring-[#00FF66]" 
+                          : "border-[#333] focus:border-[#00FF66] focus:ring-1 focus:ring-[#00FF66]"
+                      }`}
+                      disabled={loading}
+                    />
+                    <button
+                      onClick={() => removeAwbField(index)}
+                      disabled={loading}
+                      className="w-12 flex-shrink-0 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-xl flex items-center justify-center text-red-500 transition-colors disabled:opacity-50"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {!loading && awbs.length >= 20 && (
+                <p className="text-xs text-yellow-500 text-center py-2">
+                  Maximum 20 AWB numbers allowed.
+                </p>
+              )}
+
+              {!loading && awbs.length < 20 && (
+                <button
+                  onClick={addAwbField}
+                  className="w-full py-3 border border-dashed border-white/20 rounded-xl text-sm font-medium text-white/70 hover:bg-white/5 hover:text-white transition-colors flex items-center justify-center gap-2"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add AWB
+                </button>
+              )}
             </div>
-            
-            <div className="flex flex-col gap-2 max-h-[30vh] overflow-y-auto pr-1 custom-scrollbar">
-              {awbs.map((awb, index) => (
-                <div key={index} className="flex gap-2">
-                  <input
-                    type="text"
-                    ref={(el) => (awbInputRefs.current[index] = el)}
-                    value={awb}
-                    onChange={(e) => updateAwbField(index, e.target.value)}
-                    onFocus={() => setActiveAwbIndex(index)}
-                    placeholder="Enter or paste AWB number"
-                    className={`flex-1 bg-[#111] border rounded-xl py-3 px-4 text-white focus:outline-none transition-all placeholder:text-white/30 text-sm ${
-                      activeAwbIndex === index 
-                        ? "border-[#00FF66] ring-1 ring-[#00FF66]" 
-                        : "border-[#333] focus:border-[#00FF66] focus:ring-1 focus:ring-[#00FF66]"
-                    }`}
-                    disabled={loading}
-                  />
-                  <button
-                    onClick={() => removeAwbField(index)}
-                    disabled={loading}
-                    className="w-12 flex-shrink-0 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-xl flex items-center justify-center text-red-500 transition-colors disabled:opacity-50"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            {!loading && awbs.length >= 20 && (
-              <p className="text-xs text-yellow-500 text-center py-2">
-                Maximum 20 AWB numbers allowed.
-              </p>
-            )}
-
-            {!loading && awbs.length < 20 && (
-              <button
-                onClick={addAwbField}
-                className="w-full py-3 border border-dashed border-white/20 rounded-xl text-sm font-medium text-white/70 hover:bg-white/5 hover:text-white transition-colors flex items-center justify-center gap-2"
-              >
-                <Plus className="w-4 h-4" />
-                Add AWB
-              </button>
-            )}
-          </div>
+          )}
 
           {errorMessage && !loading && (
             <motion.div 
