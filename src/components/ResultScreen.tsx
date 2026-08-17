@@ -1,4 +1,5 @@
-import { useState } from "react";
+import SignedImage from "./SignedImage";
+import { useState, useEffect } from "react";
 import { PodImage } from "../types";
 import { supabase } from "../lib/supabase";
 import {
@@ -18,7 +19,34 @@ export default function ResultScreen({
   pod: PodImage;
   onBack: () => void;
 }) {
-  const [isDeleting, setIsDeleting] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
+  const [signedUrl, setSignedUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function fetchUrl() {
+      if (!pod.image_url) return;
+      
+      let path = pod.image_url;
+      if (path.startsWith("http")) {
+        const parts = path.split("/pod-images/");
+        if (parts.length > 1) {
+          path = parts[1];
+        } else {
+          setSignedUrl(path);
+          return;
+        }
+      }
+      
+      const { data } = await supabase.storage
+        .from("pod-images")
+        .createSignedUrl(path, 60 * 60 * 24); // 24 hours
+        
+      if (data?.signedUrl) {
+        setSignedUrl(data.signedUrl);
+      }
+    }
+    fetchUrl();
+  }, [pod.image_url]);
 
   const handleDelete = async () => {
     if (!confirm("Are you sure you want to delete this POD?")) return;
@@ -40,20 +68,52 @@ export default function ResultScreen({
     }
   };
 
-  const handleShare = async () => {
+    const handleShare = async () => {
+    const targetUrl = signedUrl || pod.image_url;
     if (navigator.share) {
       try {
         await navigator.share({
           title: "POD Image",
           text: `Tracking Numbers: ${pod.tracking_numbers.join(", ")}`,
-          url: pod.image_url,
+          url: targetUrl,
         });
       } catch (err) {
         console.error("Share failed", err);
       }
     } else {
-      navigator.clipboard.writeText(pod.image_url);
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          try {
+            await navigator.clipboard.writeText(targetUrl);
+            alert("Link copied to clipboard");
+          } catch (err) {
+            fallbackCopy(targetUrl);
+          }
+        } else {
+          fallbackCopy(targetUrl);
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Failed to copy link");
+      }
+    }
+  };
+
+  const fallbackCopy = (text: string) => {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "absolute";
+    textArea.style.left = "-999999px";
+    document.body.prepend(textArea);
+    textArea.select();
+    try {
+      document.execCommand("copy");
       alert("Link copied to clipboard");
+    } catch (error) {
+      console.error(error);
+      alert("Failed to copy link");
+    } finally {
+      textArea.remove();
     }
   };
 
@@ -75,11 +135,7 @@ export default function ResultScreen({
 
       <div className="p-4 space-y-6 pb-8">
         <div className="relative rounded-3xl overflow-hidden bg-black border border-white/5 shadow-2xl flex items-center justify-center">
-          <img
-            src={pod.image_url}
-            alt="POD Large"
-            className="w-full object-contain max-h-[60vh] opacity-80"
-          />
+          <SignedImage src={pod.image_url} alt="POD Large" className="w-full object-contain max-h-[60vh] opacity-80" />
           <div className="absolute top-4 left-4 z-10 text-[10px] bg-black/60 px-2 py-1 rounded border border-white/10 font-mono">
             POD_IMG_{pod.id.substring(0, 6).toUpperCase()}
           </div>
@@ -145,7 +201,7 @@ export default function ResultScreen({
           </button>
 
           <a
-            href={pod.image_url}
+            href={signedUrl || pod.image_url}
             target="_blank"
             rel="noopener noreferrer"
             download

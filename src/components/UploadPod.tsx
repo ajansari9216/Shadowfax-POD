@@ -30,6 +30,18 @@ export default function UploadPod({
   const [awbs, setAwbs] = useState<string[]>([""]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showLiveCamera, setShowLiveCamera] = useState(false);
+  const [debugClicks, setDebugClicks] = useState(0);
+  const [showDebug, setShowDebug] = useState(false);
+  
+  const handleTitleClick = () => {
+    setDebugClicks(prev => {
+      if (prev + 1 >= 5) {
+        setShowDebug(s => !s);
+        return 0;
+      }
+      return prev + 1;
+    });
+  };
   
   const [activeAwbIndex, setActiveAwbIndex] = useState(0);
 
@@ -67,51 +79,63 @@ export default function UploadPod({
     return () => window.removeEventListener("resize", updateDimensions);
   }, []);
 
-  const handleCopyAwb = async (rawText: string) => {
+    const handleCopyAwb = async (rawText: string) => {
     const text = rawText.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+    
+    const fallbackCopyTextToClipboard = (text: string) => {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.style.position = "absolute";
+      textArea.style.left = "-999999px";
+      document.body.prepend(textArea);
+      textArea.select();
+      try {
+        document.execCommand("copy");
+      } catch (error) {
+        console.error(error);
+      } finally {
+        textArea.remove();
+      }
+    };
+
     try {
       if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const textArea = document.createElement("textarea");
-        textArea.value = text;
-        textArea.style.position = "absolute";
-        textArea.style.left = "-999999px";
-        document.body.prepend(textArea);
-        textArea.select();
         try {
-          document.execCommand("copy");
-        } catch (error) {
-          console.error(error);
-        } finally {
-          textArea.remove();
+          await navigator.clipboard.writeText(text);
+        } catch (err) {
+          console.error("Clipboard API failed, trying fallback:", err);
+          fallbackCopyTextToClipboard(text);
         }
+      } else {
+        fallbackCopyTextToClipboard(text);
       }
-      setCopiedAwb(text);
-      setTimeout(() => setCopiedAwb(null), 2000);
-      
-      // Auto-add to empty field
-      setAwbs(currentAwbs => {
-        const newAwbs = [...currentAwbs];
-        const currentCleaned = newAwbs.map(a => a.trim());
-        if (currentCleaned.includes(text)) {
-          return currentAwbs; // already exists
-        }
-        
-        const emptyIndex = newAwbs.findIndex(a => a.trim() === "");
-        if (emptyIndex !== -1) {
-          newAwbs[emptyIndex] = text;
-        } else if (newAwbs.length < 20) {
-          newAwbs.push(text);
-        } else {
-          setErrorMessage("Maximum 20 AWB numbers allowed.");
-        }
-        return newAwbs;
-      });
-      
     } catch (err) {
       console.error("Failed to copy:", err);
     }
+    
+    // Always execute the UI update regardless of clipboard success
+    setCopiedAwb(text);
+    setTimeout(() => setCopiedAwb(null), 2000);
+    
+    // Auto-add to empty field
+    setAwbs(currentAwbs => {
+      const newAwbs = [...currentAwbs];
+      const currentCleaned = newAwbs.map(a => a.trim());
+      
+      if (currentCleaned.includes(text)) {
+        return currentAwbs; // already exists
+      }
+      
+      const emptyIndex = newAwbs.findIndex(a => a.trim() === "");
+      if (emptyIndex !== -1) {
+        newAwbs[emptyIndex] = text;
+      } else if (newAwbs.length < 20) {
+        newAwbs.push(text);
+      } else {
+        setErrorMessage("Maximum 20 AWB numbers allowed.");
+      }
+      return newAwbs;
+    });
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -260,7 +284,7 @@ export default function UploadPod({
 
       const insertPayload = cleanedAwbs.map(awb => ({
         user_id: user.id,
-        image_url: publicUrlData.publicUrl,
+        image_url: filePath, // Using the raw bucket path for signed URL generation
         ocr_text: "",
         tracking_numbers: [awb],
       }));
@@ -304,7 +328,12 @@ export default function UploadPod({
         />
       )}
       <div className="mb-6">
-        <h2 className="text-2xl font-bold mb-1 tracking-tight">Upload POD</h2>
+        <h2 
+          className="text-2xl font-bold mb-1 tracking-tight select-none cursor-pointer" 
+          onClick={handleTitleClick}
+        >
+          Upload POD {showDebug && <span className="text-xs text-red-500 font-mono align-middle ml-2 border border-red-500 px-1 rounded">DEBUG</span>}
+        </h2>
         <p className="text-sm text-white/50">
           Capture or select a proof of delivery photo.
         </p>
@@ -370,53 +399,55 @@ export default function UploadPod({
               />
               
               {/* Tappable OCR Overlays */}
-              {imgDims.w > 0 && imgDims.nw > 0 && [...imageWords].sort((a, b) => {
-                  const areaA = (a.bbox.x1 - a.bbox.x0) * (a.bbox.y1 - a.bbox.y0);
-                  const areaB = (b.bbox.x1 - b.bbox.x0) * (b.bbox.y1 - b.bbox.y0);
-                  return areaB - areaA;
-                }).map((word, i) => {
+                                          {imgDims.w > 0 && imgDims.nw > 0 && [...imageWords].sort((a, b) => {
+                const centerYA = (a.bbox.y0 + a.bbox.y1) / 2;
+                const centerYB = (b.bbox.y0 + b.bbox.y1) / 2;
+                if (Math.abs(centerYA - centerYB) > 20) {
+                  return centerYA - centerYB;
+                }
+                return (a.bbox.x0 + a.bbox.x1) / 2 - (b.bbox.x0 + b.bbox.x1) / 2;
+              }).map((word, i) => {
                 const scaleX = imgDims.w / imgDims.nw;
                 const scaleY = imgDims.h / imgDims.nh;
+                
+                // Keep the exact bounds
                 const left = word.bbox.x0 * scaleX;
                 const top = word.bbox.y0 * scaleY;
                 const width = (word.bbox.x1 - word.bbox.x0) * scaleX;
                 const height = (word.bbox.y1 - word.bbox.y0) * scaleY;
                 
-                // Expand hit area slightly for mobile tap targets
-                const padding = 16;
-                const hitAreaStyle = {
-                  left: left - padding,
-                  top: top - padding,
-                  width: width + padding * 2,
-                  height: height + padding * 2,
-                };
+                // Expand hit area slightly for mobile tap targets but keep it transparent
+                const padding = 12;
                 
                 return (
-                  <div
+                                                      <div
                     key={i}
-                    onPointerDown={(e) => { 
-                      e.preventDefault();
-                      e.stopPropagation(); 
-                      handleCopyAwb(word.text); 
+                    className="absolute z-10 flex items-center"
+                    style={{
+                      left: left,
+                      top: top,
+                      width: width,
+                      height: height,
                     }}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                    }}
-                    className="absolute cursor-pointer flex items-center justify-center group touch-none"
-                    style={hitAreaStyle}
                   >
-                    {/* Visual Box */}
-                    <div 
-                      className="absolute rounded border border-[#00FF66]/50 bg-[#00FF66]/10 group-hover:bg-[#00FF66]/30 group-hover:border-[#00FF66] group-active:bg-[#00FF66]/50 transition-colors"
-                      style={{ width, height }}
-                    />
-
-                    {copiedAwb === word.text.replace(/[^A-Z0-9]/gi, "").toUpperCase() && (
-                      <div className="absolute -top-8 left-1/2 -translate-x-1/2 z-50 bg-[#00FF66] text-black text-[10px] font-bold px-2 py-1 rounded shadow-lg whitespace-nowrap animate-in fade-in zoom-in slide-in-from-bottom-2 pointer-events-none">
-                        AWB copied
-                      </div>
-                    )}
+                    {/* Outline the detected text slightly */}
+                    <div className="absolute -inset-1 border border-[#00FF66]/50 rounded-sm pointer-events-none bg-[#00FF66]/10" />
+                    
+                    {/* Visible COPY button next to the AWB */}
+                    <button
+                      onPointerDown={(e) => { 
+                        e.preventDefault();
+                        e.stopPropagation(); 
+                        handleCopyAwb(word.text); 
+                      }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                      className="absolute left-full ml-3 px-3 py-1.5 bg-[#00FF66] text-black text-xs font-bold rounded shadow-xl active:scale-95 transition-all cursor-pointer touch-none whitespace-nowrap z-20 flex items-center gap-1"
+                    >
+                      {copiedAwb === word.text ? "COPIED ✓" : "COPY"}
+                    </button>
                   </div>
                 );
               })}
@@ -439,7 +470,37 @@ export default function UploadPod({
             )}
           </div>
           
-          <div className="flex flex-col gap-3">
+
+          
+          {/* Newly added Detected AWBs list */}
+          {imageWords.length > 0 && (
+            <div className="flex flex-col gap-2 mt-2">
+              <h3 className="text-sm font-medium text-white/70 ml-1">Detected AWBs ({imageWords.length})</h3>
+              <div className="flex flex-col gap-2 max-h-[30vh] overflow-y-auto pr-1 custom-scrollbar">
+                {imageWords.map((word, i) => (
+                  <div key={i} className="flex justify-between items-center bg-[#111] border border-white/5 rounded-xl px-4 py-3">
+                    <span className="font-mono text-[#00FF66] font-medium tracking-wider">{word.text}</span>
+                                        <motion.button 
+                      whileHover={{ scale: 1.05, boxShadow: "0px 0px 8px rgba(0,255,102,0.4)" }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={() => handleCopyAwb(word.text)}
+                      animate={{
+                        backgroundColor: copiedAwb === word.text ? "#00FF66" : "rgba(0, 255, 102, 0.1)",
+                        color: copiedAwb === word.text ? "#000000" : "#00FF66",
+                        borderColor: copiedAwb === word.text ? "#00FF66" : "rgba(0, 255, 102, 0.2)",
+                      }}
+                      transition={{ duration: 0.2 }}
+                      className="text-xs px-3 py-1.5 rounded-lg border font-bold min-w-[80px] text-center"
+                    >
+                      {copiedAwb === word.text ? "COPIED ✓" : "COPY"}
+                    </motion.button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-3 mt-2">
             {/* The AWB lists and manual input remain untouched below */}
 
             <div className="flex justify-between items-center ml-1">

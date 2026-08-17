@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { supabase } from "../lib/supabase";
 import { Loader2, Package, Calendar } from "lucide-react";
+import SignedImage from "./SignedImage";
 import { PodImage, FilterType } from "../types";
 import { format, subDays, startOfDay } from "date-fns";
 
@@ -97,12 +98,7 @@ export default function History({
                 className="glass-card hover:border-[#00FF66]/50 rounded-2xl p-4 flex gap-4 items-center cursor-pointer active:scale-[0.98] transition-all border-l-2 border-l-[#00FF66]"
               >
                 <div className="w-16 h-16 rounded-xl bg-black overflow-hidden flex-shrink-0 border border-white/10">
-                  <img
-                    src={pod.image_url}
-                    alt="POD"
-                    className="w-full h-full object-cover"
-                    loading="lazy"
-                  />
+                  <SignedImage src={pod.image_url} alt="POD" className="w-full h-full object-cover" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-start mb-1">
