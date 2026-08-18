@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   X,
   Plus,
-  Trash2,
   ScanSearch,
   Loader2,
   Copy
@@ -227,10 +226,7 @@ export default function UploadPod({
     }
   };
 
-  const removeAwbField = (indexToRemove: number) => {
-    const newAwbs = awbs.filter((_, index) => index !== indexToRemove);
-    setAwbs(newAwbs.length > 0 ? newAwbs : [""]);
-  };
+
 
   const updateAwbField = (index: number, value: string) => {
     const newAwbs = [...awbs];
@@ -253,10 +249,8 @@ export default function UploadPod({
       return;
     }
 
-    if (new Set(cleanedAwbs).size !== cleanedAwbs.length) {
-      setErrorMessage("Duplicate AWB number.");
-      return;
-    }
+    // De-duplicate in the same payload
+    const uniqueAwbs = Array.from(new Set<string>(cleanedAwbs));
 
     setLoading(true);
     let isSuccess = false;
@@ -267,8 +261,38 @@ export default function UploadPod({
         throw new Error("You must be logged in to upload PODs.");
       }
 
+      setStatus("Checking for duplicates...");
+      setProgress(10);
+
+      // Fetch existing tracking numbers that match our uniqueAwbs
+      const { data: existingRecords, error: checkError } = await supabase
+        .from("pod_images")
+        .select("tracking_numbers")
+        .overlaps("tracking_numbers", uniqueAwbs);
+
+      if (checkError) {
+        throw new Error(`Database error: ${checkError.message}`);
+      }
+
+      const existingAwbs = new Set<string>();
+      if (existingRecords) {
+        existingRecords.forEach(record => {
+          if (record.tracking_numbers) {
+            record.tracking_numbers.forEach((awb: string) => existingAwbs.add(awb));
+          }
+        });
+      }
+
+      const newAwbsToSave = uniqueAwbs.filter(awb => !existingAwbs.has(awb));
+
+      if (newAwbsToSave.length === 0) {
+        setErrorMessage("All selected AWBs have already been uploaded.");
+        setLoading(false);
+        return;
+      }
+
       setStatus("Uploading POD...");
-      setSubStatus(`Saving ${cleanedAwbs.length} AWB numbers...`);
+      setSubStatus(`Saving ${newAwbsToSave.length} new AWB number(s)...`);
       setProgress(30);
 
       const fileExt = file.name ? file.name.split(".").pop() : "jpg";
@@ -290,9 +314,9 @@ export default function UploadPod({
 
       setProgress(80);
 
-      const insertPayload = cleanedAwbs.map(awb => ({
+      const insertPayload = newAwbsToSave.map(awb => ({
         user_id: user.id,
-        image_url: filePath, // Using the raw bucket path for signed URL generation
+        image_url: filePath,
         ocr_text: "",
         tracking_numbers: [awb],
       }));
@@ -305,7 +329,7 @@ export default function UploadPod({
 
       isSuccess = true;
       setStatus("POD uploaded successfully");
-      setSubStatus(`${cleanedAwbs.length} AWB numbers saved`);
+      setSubStatus(`${newAwbsToSave.length} AWB number(s) saved`);
       setProgress(100);
 
       setTimeout(() => {
@@ -536,13 +560,6 @@ export default function UploadPod({
                       }`}
                       disabled={loading}
                     />
-                    <button
-                      onClick={() => removeAwbField(index)}
-                      disabled={loading}
-                      className="w-12 flex-shrink-0 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-xl flex items-center justify-center text-red-500 transition-colors disabled:opacity-50"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
                   </div>
                 ))}
               </div>
