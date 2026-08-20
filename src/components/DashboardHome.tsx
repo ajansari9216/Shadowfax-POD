@@ -37,6 +37,10 @@ export default function DashboardHome({
     setLoading(true);
     // Remove spaces and uppercase
     const cleanQuery = query.replace(/\s+/g, "").toUpperCase();
+    
+    // Extract valid AWB (starts with SF or R, ends with AJI or NYK)
+    const awbMatch = cleanQuery.match(/(?:SF|R)[A-Z0-9]*(?:AJI|NYK)/);
+    const searchTarget = awbMatch ? awbMatch[0] : cleanQuery;
 
     try {
       // using Supabase array contains operator @> format for text[]
@@ -44,7 +48,7 @@ export default function DashboardHome({
       const { data, error } = await supabase
         .from("pod_images")
         .select("*")
-        .contains("tracking_numbers", [cleanQuery]);
+        .contains("tracking_numbers", [searchTarget]);
 
       if (error) throw error;
       setResults(data || []);

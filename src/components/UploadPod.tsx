@@ -42,7 +42,6 @@ export default function UploadPod({
     });
   };
   
-  const [activeAwbIndex, setActiveAwbIndex] = useState(0);
 
   // On-image OCR states
   const [isFindingAwbs, setIsFindingAwbs] = useState(false);
@@ -139,7 +138,6 @@ export default function UploadPod({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
-  const awbInputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   const handleLiveCapture = (capturedFile: File) => {
     setShowLiveCamera(false);
@@ -177,7 +175,6 @@ export default function UploadPod({
       setStatus("");
       setSubStatus("");
       setErrorMessage(null);
-      setActiveAwbIndex(0);
       
       // Reset OCR state
       setImageWords([]);
@@ -214,25 +211,6 @@ export default function UploadPod({
     setIsFindingAwbs(false);
   };
 
-  const addAwbField = () => {
-    if (awbs.length < 20) {
-      setAwbs([...awbs, ""]);
-      setTimeout(() => {
-        const index = awbs.length; // Length is the new index
-        if (awbInputRefs.current[index]) {
-          awbInputRefs.current[index]?.focus();
-        }
-      }, 50);
-    }
-  };
-
-
-
-  const updateAwbField = (index: number, value: string) => {
-    const newAwbs = [...awbs];
-    newAwbs[index] = value;
-    setAwbs(newAwbs);
-  };
 
   
 
@@ -543,42 +521,16 @@ export default function UploadPod({
                 </span>
               </div>
               
-              <div className="flex flex-col gap-2 max-h-[30vh] overflow-y-auto pr-1 custom-scrollbar">
-                {awbs.map((awb, index) => (
-                  <div key={index} className="flex gap-2">
-                    <input
-                      type="text"
-                      ref={(el) => (awbInputRefs.current[index] = el)}
-                      value={awb}
-                      onChange={(e) => updateAwbField(index, e.target.value)}
-                      onFocus={() => setActiveAwbIndex(index)}
-                      placeholder="Enter or paste AWB number"
-                      className={`flex-1 bg-[#111] border rounded-xl py-3 px-4 text-white focus:outline-none transition-all placeholder:text-white/30 text-sm ${
-                        activeAwbIndex === index 
-                          ? "border-[#00FF66] ring-1 ring-[#00FF66]" 
-                          : "border-[#333] focus:border-[#00FF66] focus:ring-1 focus:ring-[#00FF66]"
-                      }`}
-                      disabled={loading}
-                    />
-                  </div>
+              <div className="flex flex-wrap gap-2 max-h-[30vh] overflow-y-auto pr-1 custom-scrollbar">
+                {awbs.filter(a => a.trim() !== "").map((awb, index) => (
+                  <span key={index} className="bg-[#111] border border-[#333] text-[#00FF66] font-mono px-3 py-2 rounded-lg text-sm">
+                    {awb}
+                  </span>
                 ))}
+                {awbs.filter(a => a.trim() !== "").length === 0 && (
+                  <p className="text-sm text-white/40 italic py-2">No AWBs detected yet.</p>
+                )}
               </div>
-
-              {!loading && awbs.length >= 20 && (
-                <p className="text-xs text-yellow-500 text-center py-2">
-                  Maximum 20 AWB numbers allowed.
-                </p>
-              )}
-
-              {!loading && awbs.length < 20 && (
-                <button
-                  onClick={addAwbField}
-                  className="w-full py-3 border border-dashed border-white/20 rounded-xl text-sm font-medium text-white/70 hover:bg-white/5 hover:text-white transition-colors flex items-center justify-center gap-2"
-                >
-                  <Plus className="w-4 h-4" />
-                  Add AWB
-                </button>
-              )}
             </div>
           )}
 
